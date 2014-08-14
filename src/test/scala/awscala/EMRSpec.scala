@@ -1,21 +1,54 @@
 package awscala
 
+
 import org.slf4j._
 import org.scalatest._
 import org.scalatest.matchers._
 import awscala.emr._
 import scala.collection.JavaConversions._
 
-class EMRSpec extends FlatSpec with ShouldMatchers {
+class EMRSpec extends FlatSpec with Matchers {
 
   behavior of "EMR"
-
-  implicit val emr = EMR.at(Region.US_EAST_1)
+  val cred = Credentials("id",  "secret")
+  implicit val emr = EMR(cred).at(Region.US_WEST_2)
   val log = LoggerFactory.getLogger(this.getClass)
 
-  /* Basically we dont' support this module, please contact @CruncherBigData.
+  it should "create Cluster" in {
+    val masterInstanceType = "c3.xlarge"
+    val masterMarketType = "SPOT"
+    val masterBidPrice = "0.30"
+    val coreInstanceType = "r3.xlarge"
+    val coreInstanceCount = 2
+    val coreMarketType = "SPOT"
+    val coreBidPrice = "0.35"
+    val taskInstanceType = ""
+    val taskInstanceCount = 0
+    val taskMarketType = ""
+    val taskBidPrice = ""
+    val ec2KeyName = "objeleflow"
+    val hadoopVersion = "2.2.0"
+    //job settings
+    val jobName = "cluster configurations SPOT"
+    val amiVersion = "3.0.4"
+    val visibleToAllUsers = true
+    val loggingURI = "s3://uberdata/logs"
+    val bootStrapActions = List (
+      emr.BootstrapAction("haddopConf", "s3://elasticmapreduce/bootstrap-actions/configure-hadoop",List("-y","yarn.nodemanager.resource.memory-mb=25600","-y","yarn.scheduler.minimum-allocation-mb=4096","-y","yarn.scheduler.maximum-allocation-mb=24576")),
+      emr.BootstrapAction("ganglia", "s3://beta.elasticmapreduce/bootstrap-actions/install-ganglia",Seq()),
+      emr.BootstrapAction("spark", "s3://avspoc/bootstrap/install-spark-1.0.0.sh",Seq())
+    )
+    val run_request = emr.createCluster(masterInstanceType, masterMarketType, masterBidPrice, coreInstanceType, coreInstanceCount, coreMarketType, coreBidPrice, taskInstanceType, taskInstanceCount, taskMarketType, taskBidPrice, ec2KeyName, hadoopVersion, bootStrapActions, "", jobName, amiVersion, loggingURI, visibleToAllUsers)
+    val job_flow_id = run_request.getJobFlowId()
+    log.info(s"Created cluster with job flow id = $job_flow_id")
+    Thread.sleep(10000)
+    var state = emr.getClusterState(job_flow_id)
+    log.info(s" current state of cluster is $state")
+    state should equal("STARTING")
+  }
 
   // starts an EMR cluster based on "on-demand" instances
+  /* Basically we dont' support this module, please contact @CruncherBigData.
 
   var job_flow_id: String = ""
   it should "cluster configurations on demand" in {

@@ -86,20 +86,24 @@ trait EMR extends aws.AmazonElasticMapReduce {
     taskMarketType: String = "ON_DEMAND",
     taskBidPrice: String = "0.0",
     ec2KeyName: String,
-    hadoopVersion: String): JobFlowInstancesConfig = {
-
+    hadoopVersion: String,
+    alive:Boolean = false): JobFlowInstancesConfig = {
+    var clusterGroups = List[InstanceGroupConfig]()
     //building master node
-    val masterGroupConfig = buildMasterGroupConfig(masterInstanceType, masterMarketType, masterBidPrice)
+    clusterGroups = buildMasterGroupConfig(masterInstanceType, masterMarketType, masterBidPrice) :: clusterGroups
     //building core node
-    val coreGroupConfig = buildCoreGroupConfig(coreInstanceType, coreInstanceCount, coreMarketType, coreBidPrice)
+    clusterGroups =  buildCoreGroupConfig(coreInstanceType, coreInstanceCount, coreMarketType, coreBidPrice) :: clusterGroups
     //building task node
-    val taskGroupConfig = buildTaskGroupConfig(taskInstanceType, taskInstanceCount, taskMarketType, taskBidPrice)
-    val clusterGroups = List(masterGroupConfig, coreGroupConfig, taskGroupConfig)
+    if (taskInstanceCount > 0) {
+      clusterGroups = buildTaskGroupConfig(taskInstanceType, taskInstanceCount, taskMarketType, taskBidPrice) :: clusterGroups
+    }
     val addInstanceGroupsRequest = new AddInstanceGroupsRequest().withInstanceGroups(clusterGroups)
     new JobFlowInstancesConfig()
       .withEc2KeyName(ec2KeyName)
       .withHadoopVersion(hadoopVersion)
       .withInstanceGroups(addInstanceGroupsRequest.getInstanceGroups())
+      .withKeepJobFlowAliveWhenNoSteps(alive)
+
   }
 
   //Step #2
@@ -128,6 +132,14 @@ trait EMR extends aws.AmazonElasticMapReduce {
     }
 
   }
+  //[Step #2.1]
+  case class BootstrapAction(name: String, path: String, args: Seq[String])
+
+  def buildBootstrapActions(actions: List[BootstrapAction]): Seq[BootstrapActionConfig] = {
+    actions.map { action =>
+      new BootstrapActionConfig(action.name, new ScriptBootstrapActionConfig(action.path, action.args))
+    }
+  }
 
   //Step #3
   def buildRunRequest(
@@ -137,10 +149,15 @@ trait EMR extends aws.AmazonElasticMapReduce {
     visibleToAllUsers: Boolean = true,
     jobFlowInstancesConfig: JobFlowInstancesConfig,
     jobFlowStepsRequest: AddJobFlowStepsRequest): RunJobFlowRequest = {
+    val steps = if (jobFlowStepsRequest!=null){
+      jobFlowStepsRequest.getSteps()
+    } else {
+      null
+    }
     new RunJobFlowRequest()
       .withName(jobName)
       .withAmiVersion(amiVersion)
-      .withSteps(jobFlowStepsRequest.getSteps())
+      .withSteps(steps)
       .withLogUri(loggingURI)
       .withVisibleToAllUsers(visibleToAllUsers)
       .withInstances(jobFlowInstancesConfig)
@@ -193,6 +210,56 @@ trait EMR extends aws.AmazonElasticMapReduce {
       visibleToAllUsers,
       jobFlowInstancesConfig,
       jobFlowStepsRequest)
+
+    runJobFlow(runJobFlowRequest)
+  }
+
+  def createCluster[T](
+                     masterInstanceType: String = "m1.small",
+                     masterMarketType: String = "ON_DEMAND",
+                     masterBidPrice: String = "0.0",
+                     coreInstanceType: String = "m1.small",
+                     coreInstanceCount: Int = 1,
+                     coreMarketType: String = "ON_DEMAND",
+                     coreBidPrice: String = "0.0",
+                     taskInstanceType: String = "m1.small",
+                     taskInstanceCount: Int = 1,
+                     taskMarketType: String = "ON_DEMAND",
+                     taskBidPrice: String = "0.0",
+                     ec2KeyName: String,
+                     hadoopVersion: String,
+                     bootstrapActions: Seq[BootstrapAction],
+                     jobFlowId: String = "",
+                     jobName: String = "AWSscala",
+                     amiVersion: String = "latest",
+                     loggingURI: String = "",
+                     visibleToAllUsers: Boolean = true): aws.model.RunJobFlowResult = {
+
+    val jobFlowInstancesConfig = buildJobFlowInstancesConfig(
+      masterInstanceType,
+      masterMarketType,
+      masterBidPrice,
+      coreInstanceType,
+      coreInstanceCount,
+      coreMarketType,
+      coreBidPrice,
+      taskInstanceType,
+      taskInstanceCount,
+      taskMarketType,
+      taskBidPrice,
+      ec2KeyName,
+      hadoopVersion,
+      true)
+
+
+    val runJobFlowRequest = buildRunRequest(
+      jobName,
+      amiVersion,
+      loggingURI,
+      visibleToAllUsers,
+      jobFlowInstancesConfig,
+      null)
+    runJobFlowRequest.withBootstrapActions(buildBootstrapActions(bootstrapActions.toList))
 
     runJobFlow(runJobFlowRequest)
   }
