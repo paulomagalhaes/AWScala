@@ -1,7 +1,7 @@
 AWScala: AWS SDK on the Scala REPL
 =======
 
-[![Build Status](https://travis-ci.org/seratch/AWScala.svg)](https://travis-ci.org/seratch/AWScala)
+[![Build Status](https://travis-ci.org/paulomagalhaes/AWScala.svg)](https://travis-ci.org/paulomagalhaes/AWScala)
 
 AWScala enables Scala developers to easily work with Amazon Web Services in the Scala way.
 

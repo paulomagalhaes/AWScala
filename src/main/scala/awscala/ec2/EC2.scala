@@ -3,22 +3,21 @@ package awscala.ec2
 import awscala._
 import scala.collection.JavaConverters._
 import com.amazonaws.services.{ ec2 => aws }
+import scala.annotation.tailrec
 
 object EC2 {
 
-  def apply(credentials: Credentials = CredentialsLoader.load()): EC2 = new EC2Client(credentials)
-  def apply(accessKeyId: String, secretAccessKey: String): EC2 = apply(Credentials(accessKeyId, secretAccessKey))
+  def apply(credentials: Credentials = CredentialsLoader.load())(implicit region: Region = Region.default()): EC2 = new EC2Client(credentials).at(region)
+  def apply(accessKeyId: String, secretAccessKey: String)(implicit region: Region): EC2 = apply(Credentials(accessKeyId, secretAccessKey)).at(region)
 
-  def at(region: Region): EC2 = apply().at(region)
+  def at(region: Region): EC2 = apply()(region)
 }
 
 /**
  * Amazon EC2 Java client wrapper
  * @see "http://docs.aws.amazon.com/AWSJavaSDK/latest/javadoc/"
  */
-trait EC2 extends aws.AmazonEC2 {
-
-  lazy val CHECK_INTERVAL = 5000L
+trait EC2 extends aws.AmazonEC2Async {
 
   def at(region: Region): EC2 = {
     this.setRegion(region)
@@ -38,6 +37,11 @@ trait EC2 extends aws.AmazonEC2 {
       .getReservations.asScala.flatMap(_.getInstances.asScala).map(Instance(_))
   }
 
+  def instances(instanceIds: Seq[String] = Nil, filters: Seq[aws.model.Filter] = Nil): Seq[Instance] = {
+    describeInstances(new aws.model.DescribeInstancesRequest().withInstanceIds(instanceIds.asJava).withFilters(filters.asJava))
+      .getReservations.asScala.flatMap(_.getInstances.asScala).map(Instance(_))
+  }
+
   def runAndAwait(
     imageId: String,
     keyPair: KeyPair,
@@ -48,19 +52,18 @@ trait EC2 extends aws.AmazonEC2 {
     runAndAwait(new RunInstancesRequest(imageId, min, max).withKeyName(keyPair.name).withInstanceType(instanceType))
   }
 
-  def runAndAwait(request: aws.model.RunInstancesRequest): Seq[Instance] = {
-    var requestedInstances: Seq[Instance] = runInstances(request).getReservation.getInstances.asScala.map(Instance(_))
-    val ids = requestedInstances.map(_.instanceId)
-
-    def checkStatus(checkIds: Seq[String]): Seq[Instance] = instances.filter(i => checkIds.contains(i.instanceId))
-
-    val pendingState = new aws.model.InstanceState().withName(aws.model.InstanceStateName.Pending)
-    while (requestedInstances.exists(_.state.getName == pendingState.getName)) {
-      Thread.sleep(CHECK_INTERVAL)
-      requestedInstances = checkStatus(ids)
+  @tailrec
+  final def awaitInstances(awaiting: Seq[Instance], checkInterval: Long = 5000L): Seq[Instance] = {
+    val requested = instances(awaiting.map(_.instanceId))
+    if (requested.exists(_.state.getName == aws.model.InstanceStateName.Pending.name())) {
+      Thread.sleep(checkInterval)
+      awaitInstances(awaiting, checkInterval)
+    } else {
+      requested
     }
-    requestedInstances
   }
+
+  def runAndAwait(request: aws.model.RunInstancesRequest): Seq[Instance] = awaitInstances(runInstances(request).getReservation.getInstances.asScala.map(Instance(_)))
 
   def start(instance: Instance*) = startInstances(new aws.model.StartInstancesRequest()
     .withInstanceIds(instance.map(_.instanceId): _*))
@@ -112,8 +115,9 @@ trait EC2 extends aws.AmazonEC2 {
   }
 
   def tags(filters: Seq[aws.model.Filter] = Nil): Seq[aws.model.TagDescription] = {
-    import com.amazonaws.services.ec2.model.DescribeTagsResult
+    import aws.model.DescribeTagsResult
     object tagsSequencer extends Sequencer[aws.model.TagDescription, DescribeTagsResult, String] {
+
       val baseRequest = new aws.model.DescribeTagsRequest().withFilters(filters.asJava)
       def getInitial = describeTags(baseRequest)
       def getMarker(r: DescribeTagsResult) = r.getNextToken()
@@ -124,7 +128,7 @@ trait EC2 extends aws.AmazonEC2 {
   }
 
   def instanceStatuses(includeAll: Boolean = false, instanceIds: Seq[String] = Nil, filters: Seq[aws.model.Filter] = Nil): Seq[aws.model.InstanceStatus] = {
-    import com.amazonaws.services.ec2.model.DescribeInstanceStatusResult
+    import aws.model.DescribeInstanceStatusResult
 
     object instanceStatusSequencer extends Sequencer[aws.model.InstanceStatus, DescribeInstanceStatusResult, String] {
       val baseRequest = new aws.model.DescribeInstanceStatusRequest().withIncludeAllInstances(includeAll).withInstanceIds(instanceIds.asJava).withFilters(filters.asJava)
@@ -137,7 +141,7 @@ trait EC2 extends aws.AmazonEC2 {
   }
 
   def reservedInstanceOfferings(availabilityZone: Option[String] = None, filters: Seq[aws.model.Filter] = Nil): Seq[aws.model.ReservedInstancesOffering] = {
-    import com.amazonaws.services.ec2.model.DescribeReservedInstancesOfferingsResult
+    import aws.model.DescribeReservedInstancesOfferingsResult
 
     object reservedSequencer extends Sequencer[aws.model.ReservedInstancesOffering, DescribeReservedInstancesOfferingsResult, String] {
       val baseRequest = new aws.model.DescribeReservedInstancesOfferingsRequest().withFilters(filters.asJava)
@@ -157,5 +161,5 @@ trait EC2 extends aws.AmazonEC2 {
  * @param credentials credentials
  */
 class EC2Client(credentials: Credentials = CredentialsLoader.load())
-  extends aws.AmazonEC2Client(credentials)
+  extends aws.AmazonEC2AsyncClient(credentials)
   with EC2

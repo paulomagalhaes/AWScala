@@ -8,11 +8,11 @@ import scala.annotation.tailrec
 
 object S3 {
 
-  def apply(credentials: Credentials = CredentialsLoader.load()): S3 = new S3Client(credentials)
+  def apply(credentials: Credentials = CredentialsLoader.load())(implicit region: Region = Region.default()): S3 = new S3Client(credentials).at(region)
 
-  def apply(accessKeyId: String, secretAccessKey: String): S3 = apply(Credentials(accessKeyId, secretAccessKey))
+  def apply(accessKeyId: String, secretAccessKey: String)(implicit region: Region): S3 = apply(Credentials(accessKeyId, secretAccessKey)).at(region)
 
-  def at(region: Region): S3 = apply().at(region)
+  def at(region: Region): S3 = apply()(region)
 }
 
 /**
@@ -212,11 +212,16 @@ trait S3 extends aws.AmazonS3 {
     deleteVersion(new aws.model.DeleteVersionRequest(obj.bucket.name, obj.key, versionId))
   }
 
-  def deleteObjects(objs: Seq[S3Object]): Unit = objs.headOption.map {
-    obj =>
-      val req = new aws.model.DeleteObjectsRequest(obj.bucket.name)
-      req.setKeys(objs.map(obj => new aws.model.DeleteObjectsRequest.KeyVersion(obj.key, obj.versionId)).asJava)
-      deleteObjects(req)
+  def deleteObjects(objs: Seq[S3Object]): Unit = {
+    objs.groupBy(_.bucket) map {
+      x =>
+        x._2.headOption.map {
+          obj =>
+            val req = new aws.model.DeleteObjectsRequest(obj.bucket.name)
+            req.setKeys(x._2.map(obj => new aws.model.DeleteObjectsRequest.KeyVersion(obj.key, obj.versionId)).asJava)
+            deleteObjects(req)
+        }
+    }
   }
 
   // presignedUrl

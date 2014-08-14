@@ -7,10 +7,10 @@ import com.amazonaws.services.simpledb.model.ListDomainsRequest
 
 object SimpleDB {
 
-  def apply(credentials: Credentials = CredentialsLoader.load()): SimpleDB = new SimpleDBClient(credentials)
-  def apply(accessKeyId: String, secretAccessKey: String): SimpleDB = apply(Credentials(accessKeyId, secretAccessKey))
+  def apply(credentials: Credentials = CredentialsLoader.load())(implicit region: Region = Region.default()): SimpleDB = new SimpleDBClient(credentials).at(region)
+  def apply(accessKeyId: String, secretAccessKey: String)(implicit region: Region): SimpleDB = apply(Credentials(accessKeyId, secretAccessKey)).at(region)
 
-  def at(region: Region): SimpleDB = apply().at(region)
+  def at(region: Region): SimpleDB = apply()(region)
 }
 
 /**
@@ -29,7 +29,7 @@ trait SimpleDB extends aws.AmazonSimpleDB {
   // ------------------------------------------
 
   def domains: Seq[Domain] = {
-    import com.amazonaws.services.simpledb.model.ListDomainsResult
+    import aws.model.ListDomainsResult
 
     object domainsSequencer extends Sequencer[Domain, ListDomainsResult, String] {
       val baseRequest = new ListDomainsRequest()
@@ -59,7 +59,7 @@ trait SimpleDB extends aws.AmazonSimpleDB {
   // ------------------------------------------
 
   def select(domain: Domain, expression: String, consistentRead: Boolean = false): Seq[Item] = {
-    import com.amazonaws.services.simpledb.model.SelectResult
+    import aws.model.SelectResult
 
     object selectSequencer extends Sequencer[Item, SelectResult, String] {
       val baseRequest = new aws.model.SelectRequest().withSelectExpression(expression).withConsistentRead(consistentRead)

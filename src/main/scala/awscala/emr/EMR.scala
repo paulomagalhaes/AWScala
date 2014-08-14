@@ -3,13 +3,15 @@ package awscala.emr
 import awscala._
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
+import scala.concurrent.duration._
+import scala.language.postfixOps
 import com.amazonaws.services.{ elasticmapreduce => aws }
 import aws.model._
 
 object EMR {
-  def apply(credentials: Credentials = CredentialsLoader.load()): EMR = new EMRClient(credentials)
-  def apply(accessKeyId: String, secretAccessKey: String): EMR = apply(Credentials(accessKeyId, secretAccessKey))
-  def at(region: Region): EMR = apply().at(region)
+  def apply(credentials: Credentials = CredentialsLoader.load())(implicit region: Region = Region.default()): EMR = new EMRClient(credentials).at(region)
+  def apply(accessKeyId: String, secretAccessKey: String)(implicit region: Region): EMR = apply(Credentials(accessKeyId, secretAccessKey)).at(region)
+  def at(region: Region): EMR = apply()(region)
 }
 
 trait EMR extends aws.AmazonElasticMapReduce {
@@ -84,20 +86,24 @@ trait EMR extends aws.AmazonElasticMapReduce {
     taskMarketType: String = "ON_DEMAND",
     taskBidPrice: String = "0.0",
     ec2KeyName: String,
-    hadoopVersion: String): JobFlowInstancesConfig = {
-
+    hadoopVersion: String,
+    alive:Boolean = false): JobFlowInstancesConfig = {
+    var clusterGroups = List[InstanceGroupConfig]()
     //building master node
-    val masterGroupConfig = buildMasterGroupConfig(masterInstanceType, masterMarketType, masterBidPrice)
+    clusterGroups = buildMasterGroupConfig(masterInstanceType, masterMarketType, masterBidPrice) :: clusterGroups
     //building core node
-    val coreGroupConfig = buildCoreGroupConfig(coreInstanceType, coreInstanceCount, coreMarketType, coreBidPrice)
+    clusterGroups =  buildCoreGroupConfig(coreInstanceType, coreInstanceCount, coreMarketType, coreBidPrice) :: clusterGroups
     //building task node
-    val taskGroupConfig = buildTaskGroupConfig(taskInstanceType, taskInstanceCount, taskMarketType, taskBidPrice)
-    val clusterGroups = List(masterGroupConfig, coreGroupConfig, taskGroupConfig)
+    if (taskInstanceCount > 0) {
+      clusterGroups = buildTaskGroupConfig(taskInstanceType, taskInstanceCount, taskMarketType, taskBidPrice) :: clusterGroups
+    }
     val addInstanceGroupsRequest = new AddInstanceGroupsRequest().withInstanceGroups(clusterGroups)
     new JobFlowInstancesConfig()
       .withEc2KeyName(ec2KeyName)
       .withHadoopVersion(hadoopVersion)
       .withInstanceGroups(addInstanceGroupsRequest.getInstanceGroups())
+      .withKeepJobFlowAliveWhenNoSteps(alive)
+
   }
 
   //Step #2
@@ -126,6 +132,14 @@ trait EMR extends aws.AmazonElasticMapReduce {
     }
 
   }
+  //[Step #2.1]
+  case class BootstrapAction(name: String, path: String, args: Seq[String])
+
+  def buildBootstrapActions(actions: List[BootstrapAction]): Seq[BootstrapActionConfig] = {
+    actions.map { action =>
+      new BootstrapActionConfig(action.name, new ScriptBootstrapActionConfig(action.path, action.args))
+    }
+  }
 
   //Step #3
   def buildRunRequest(
@@ -135,10 +149,15 @@ trait EMR extends aws.AmazonElasticMapReduce {
     visibleToAllUsers: Boolean = true,
     jobFlowInstancesConfig: JobFlowInstancesConfig,
     jobFlowStepsRequest: AddJobFlowStepsRequest): RunJobFlowRequest = {
+    val steps = if (jobFlowStepsRequest!=null){
+      jobFlowStepsRequest.getSteps()
+    } else {
+      null
+    }
     new RunJobFlowRequest()
       .withName(jobName)
       .withAmiVersion(amiVersion)
-      .withSteps(jobFlowStepsRequest.getSteps())
+      .withSteps(steps)
       .withLogUri(loggingURI)
       .withVisibleToAllUsers(visibleToAllUsers)
       .withInstances(jobFlowInstancesConfig)
@@ -195,8 +214,69 @@ trait EMR extends aws.AmazonElasticMapReduce {
     runJobFlow(runJobFlowRequest)
   }
 
-  def clusters(clusterStates: Seq[String] = Nil, createdBefore: Option[java.util.Date] = None, createdAfter: Option[java.util.Date] = None): Seq[ClusterSummary] = {
-    import com.amazonaws.services.elasticmapreduce.model.ListClustersResult
+  def createCluster[T](
+                     masterInstanceType: String = "m1.small",
+                     masterMarketType: String = "ON_DEMAND",
+                     masterBidPrice: String = "0.0",
+                     coreInstanceType: String = "m1.small",
+                     coreInstanceCount: Int = 1,
+                     coreMarketType: String = "ON_DEMAND",
+                     coreBidPrice: String = "0.0",
+                     taskInstanceType: String = "m1.small",
+                     taskInstanceCount: Int = 1,
+                     taskMarketType: String = "ON_DEMAND",
+                     taskBidPrice: String = "0.0",
+                     ec2KeyName: String,
+                     hadoopVersion: String,
+                     bootstrapActions: Seq[BootstrapAction],
+                     jobFlowId: String = "",
+                     jobName: String = "AWSscala",
+                     amiVersion: String = "latest",
+                     loggingURI: String = "",
+                     visibleToAllUsers: Boolean = true): aws.model.RunJobFlowResult = {
+
+    val jobFlowInstancesConfig = buildJobFlowInstancesConfig(
+      masterInstanceType,
+      masterMarketType,
+      masterBidPrice,
+      coreInstanceType,
+      coreInstanceCount,
+      coreMarketType,
+      coreBidPrice,
+      taskInstanceType,
+      taskInstanceCount,
+      taskMarketType,
+      taskBidPrice,
+      ec2KeyName,
+      hadoopVersion,
+      true)
+
+
+    val runJobFlowRequest = buildRunRequest(
+      jobName,
+      amiVersion,
+      loggingURI,
+      visibleToAllUsers,
+      jobFlowInstancesConfig,
+      null)
+    runJobFlowRequest.withBootstrapActions(buildBootstrapActions(bootstrapActions.toList))
+
+    runJobFlow(runJobFlowRequest)
+  }
+
+  def clusters(clusterStates: Seq[String] = Nil, createdBefore: Option[java.util.Date] = None, createdAfter: Option[java.util.Date] = None): Seq[awscala.emr.Cluster] =
+    clusterSummaries(clusterStates, createdBefore, createdAfter) map { x => toCluster(x) }
+
+  private def toCluster(summary: ClusterSummary): awscala.emr.Cluster =
+    Cluster(describeCluster(new DescribeClusterRequest().withClusterId(summary.getId)).getCluster())
+
+  def runningClusters() = clusters(Seq("RUNNING"))
+
+  def recentClusters(duration: Duration = 1 hour) =
+    clusterSummaries(Nil, None, Some(new DateTime().minusMillis(duration.toMillis.toInt).toDate())).toList.sortBy(x => x.getStatus().getTimeline().getCreationDateTime()) map { x => toCluster(x) }
+
+  def clusterSummaries(clusterStates: Seq[String] = Nil, createdBefore: Option[java.util.Date] = None, createdAfter: Option[java.util.Date] = None): Seq[ClusterSummary] = {
+    import aws.model.ListClustersResult
     object clustersSequencer extends Sequencer[ClusterSummary, ListClustersResult, String] {
       val base = new ListClustersRequest().withClusterStates(clusterStates.toList.asJava)
       val baseRequest1 = if (createdBefore == None) base else base.withCreatedBefore(createdBefore.get)
@@ -210,7 +290,7 @@ trait EMR extends aws.AmazonElasticMapReduce {
   }
 
   def bootstrapActions(clusterId: Option[String] = None): Seq[Command] = {
-    import com.amazonaws.services.elasticmapreduce.model.ListBootstrapActionsResult
+    import aws.model.ListBootstrapActionsResult
     object actionSequencer extends Sequencer[Command, ListBootstrapActionsResult, String] {
       val baseRequest = if (clusterId == None) new ListBootstrapActionsRequest() else new ListBootstrapActionsRequest().withClusterId(clusterId.get)
       def getInitial = listBootstrapActions(baseRequest)
@@ -221,8 +301,8 @@ trait EMR extends aws.AmazonElasticMapReduce {
     actionSequencer.sequence
   }
 
-  def steps(clusterId: Option[String] = None, stepStates: Seq[String] = Nil): Seq[StepSummary] = {
-    import com.amazonaws.services.elasticmapreduce.model.ListStepsResult
+  def stepSummaries(clusterId: Option[String] = None, stepStates: Seq[String] = Nil): Seq[StepSummary] = {
+    import aws.model.ListStepsResult
     object stepsSequencer extends Sequencer[StepSummary, ListStepsResult, String] {
       val base = if (clusterId == None) new ListStepsRequest() else new ListStepsRequest().withClusterId(clusterId.get)
       val baseRequest = base.withStepStates(stepStates.toList.asJava)
@@ -250,7 +330,7 @@ trait EMR extends aws.AmazonElasticMapReduce {
     getClusterDetail(jobFlowId, getName)
   }
 
-  def terminateCluster(jobFlowId: String) = new TerminateJobFlowsRequest().withJobFlowIds(jobFlowId).getJobFlowIds().get(0)
+  def terminateCluster(jobFlowId: String): Unit = terminateJobFlows(new TerminateJobFlowsRequest().withJobFlowIds(jobFlowId))
 
 }
 
